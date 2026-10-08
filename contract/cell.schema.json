@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chhaya/contract/cell.schema.json",
+  "title": "Chhaya cell collection",
+  "description": "GeoJSON FeatureCollection returned by GET /cells and stored as features/cells.geojson. One feature per H3 cell. This file is the shared contract between pipeline/, api/ and web/. Change it only after telling the other two.",
+  "type": "object",
+  "required": ["type", "features"],
+  "properties": {
+    "type": { "const": "FeatureCollection" },
+    "features": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/cell" }
+    }
+  },
+  "$defs": {
+    "cell": {
+      "type": "object",
+      "required": ["type", "geometry", "properties"],
+      "properties": {
+        "type": { "const": "Feature" },
+        "geometry": { "$ref": "#/$defs/polygon" },
+        "properties": { "$ref": "#/$defs/cellProperties" }
+      }
+    },
+    "polygon": {
+      "type": "object",
+      "description": "H3 cell boundary as a GeoJSON Polygon in WGS84, [longitude, latitude], closed ring.",
+      "required": ["type", "coordinates"],
+      "properties": {
+        "type": { "const": "Polygon" },
+        "coordinates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array",
+            "minItems": 4,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "cellProperties": {
+      "type": "object",
+      "required": [
+        "h3",
+        "ndvi",
+        "lst_c",
+        "population",
+        "built_frac",
+        "dust_idx",
+        "school_count",
+        "ward",
+        "priority"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "h3": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{15}$",
+          "description": "H3 cell index as a lowercase hex string. The pipeline fixes the resolution (suggested: 8)."
+        },
+        "ndvi": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Median Sentinel-2 NDVI over the cell. Higher means greener."
+        },
+        "lst_c": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 70,
+          "description": "Land surface temperature in degrees Celsius. null when the pipeline ships the NDVI-only fallback."
+        },
+        "population": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Estimated people living in the cell (WorldPop aggregate)."
+        },
+        "built_frac": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of the cell covered by buildings or impervious surface."
+        },
+        "dust_idx": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Bare-soil-near-roads index. Exposure proxy, not measured dust."
+        },
+        "school_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of schools inside the cell (OSM)."
+        },
+        "ward": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Ward name or number the cell centre falls in. Use 'unknown' when it cannot be assigned."
+        },
+        "priority": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Default combined priority score (1 = plant here first). The web app may reweight client-side."
+        }
+      }
+    }
+  }
+}
