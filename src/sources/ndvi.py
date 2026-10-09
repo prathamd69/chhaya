@@ -71,4 +71,67 @@ class Sentinel2Source(SourceBase):
         )
         return best
 
+    def _cache_path(self, scene) -> Path:
+            cache_dir = Path(self.cfg["local"]["raw_dir"]) / "sentinel2"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            return cache_dir / f"{scene.id}_ndvi.tif"
     
+    def _load_bands(self, scene):
+        cfg = self._cfg()
+        self.log.info(f"loading bands {cfg['bands']} at {cfg['resolution_m']}m")
+
+        stack = stackstac.stack(
+            [scene],
+            assets=cfg["bands"],
+            epsg=cfg["epsg"],
+            resolution=cfg["resolution_m"],
+            bounds_latlon=cfg["bbox"],
+        ).squeeze()
+
+        red = stack.sel(band="red").compute().astype("float32")
+        nir = stack.sel(band="nir").compute().astype("float32")
+
+        self.log.info(f"loaded red shape={red.shape}, nir shape={nir.shape}")
+        return red, nir
+
+    def _compute_ndvi(self, red, nir):
+        ndvi = (nir - red) / (nir + red)
+        valid = (red > 0) & (nir > 0)
+        ndvi = ndvi.where(valid)
+
+        self.log.info(
+            f"NDVI mean={float(ndvi.mean(skipna=True)):.3f}, "
+            f"valid={float(valid.mean()):.1%}"
+        )
+        return ndvi
+
+    def _save_cache(self, ndvi, path: Path):
+        ndvi.rio.to_raster(path)
+        self.log.info(f"cached NDVI raster: {path}")
+
+    def _zonal(self, ndvi, grid) -> gpd.GeoDataFrame:
+        # Reproject hexes to the raster's CRS (UTM) — cheap, 1,945 polygons
+        grid_utm = grid.to_crs(ndvi.rio.crs)
+
+        self.log.info(f"zonal stats over {len(grid_utm)} hexes")
+
+        stats = zonal_stats(
+            grid_utm.geometry,
+            ndvi.values,
+            affine=ndvi.rio.transform(),
+            nodata=np.nan,
+            stats=["mean"],
+        )
+
+        result = gpd.GeoDataFrame(
+            {
+                "h3_index": grid["h3_index"].values,
+                "ndvi": [s["mean"] for s in stats],
+            },
+            geometry=grid.geometry,
+            crs=grid.crs,
+        )
+
+        non_null = result["ndvi"].notna().sum()
+        self.log.info(f"zonal complete — {non_null}/{len(result)} hexes have NDVI")
+        return result
