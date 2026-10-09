@@ -20,3 +20,6 @@ sources:
   sentinel2:
     date_range: "2026-01-01/2026-06-30"
     max_cloud_cover: 40
+    composite:
+      scenes: 4
+      window_days: 45 

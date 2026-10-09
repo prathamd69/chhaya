@@ -37,3 +37,7 @@ sources:
     bands: [red, nir]
     epsg: 32643                            # UTM Zone 43N (Delhi)
     resolution_m: 10
+    composite:
+      enabled: true
+      scenes: 4         # how many scenes to composite
+      window_days: 30          # max days between first and last scene
