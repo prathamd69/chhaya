@@ -40,3 +40,35 @@ class Sentinel2Source(SourceBase):
 
         return self._zonal(ndvi, grid)
 
+    # ---------- internals ----------
+
+    def _cfg(self) -> dict:
+        return self.cfg["sources"]["sentinel2"]
+
+    def _pick_scene(self):
+        cfg = self._cfg()
+        self.log.info(f"searching {cfg['collection']} — {cfg['date_range']}")
+
+        catalog = Client.open(cfg["stac_url"])
+        items = catalog.search(
+            collections=[cfg["collection"]],
+            bbox=cfg["bbox"],
+            datetime=cfg["date_range"],
+            query={"eo:cloud_cover": {"lt": cfg["max_cloud_cover"]}},
+        ).item_collection()
+
+        if len(items) == 0:
+            raise RuntimeError(
+                f"No Sentinel-2 scenes found for {cfg['date_range']} "
+                f"with cloud cover < {cfg['max_cloud_cover']}%"
+            )
+
+        best = min(items, key=lambda i: i.properties.get("eo:cloud_cover", 100))
+        self.log.info(
+            f"picked {best.id} — "
+            f"{best.properties['eo:cloud_cover']:.2f}% cloud — "
+            f"{best.datetime.date()}"
+        )
+        return best
+
+    
