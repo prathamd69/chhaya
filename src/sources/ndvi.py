@@ -27,7 +27,7 @@ class Sentinel2Source(SourceBase):
 
     # ---------- public API ----------
 
-    def run(self) -> gpd.GeoDataFrame:
+    def run(self):
         grid = self._grid()
         scene = self._pick_scenes()
         cache = self._cache_path(scene)
@@ -40,7 +40,7 @@ class Sentinel2Source(SourceBase):
             ndvi = self._compute_ndvi(red, nir)
             self._save_cache(ndvi, cache)
 
-        return self._zonal(ndvi, grid)
+        return self._zonal(ndvi, grid, cache)
 
     # ---------- internals ----------
 
@@ -158,7 +158,7 @@ class Sentinel2Source(SourceBase):
         ndvi.rio.to_raster(path)
         self.log.info(f"cached NDVI raster: {path}")
 
-    def _zonal(self, ndvi, grid) -> gpd.GeoDataFrame:
+    def _zonal(self, ndvi, grid, raster_path) -> gpd.GeoDataFrame:
         # Reproject hexes to the raster's CRS (UTM) — cheap, 1,945 polygons
         grid_utm = grid.to_crs(ndvi.rio.crs)
 
@@ -166,8 +166,7 @@ class Sentinel2Source(SourceBase):
 
         stats = zonal_stats(
             grid_utm.geometry,
-            ndvi.values,
-            affine=ndvi.rio.transform(),
+            str(raster_path),
             nodata=np.nan,
             stats=["mean"],
         )
@@ -176,9 +175,7 @@ class Sentinel2Source(SourceBase):
             {
                 "h3_index": grid["h3_index"].values,
                 "ndvi": [s["mean"] for s in stats],
-            },
-            geometry=grid.geometry,
-            crs=grid.crs,
+            }
         )
 
         non_null = result["ndvi"].notna().sum()

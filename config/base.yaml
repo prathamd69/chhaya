@@ -24,8 +24,8 @@ artifacts:
   files:
     cells_parquet:     features/cells.parquet
     cells_geojson:     features/cells.geojson
-    # heat_model:        model/heat.pkl
     pollution_latest:  features/pollution_latest.parquet
+    pipeline_status:   features/pipeline_status.json
   
 sources:
   sentinel2:
