@@ -26,3 +26,14 @@ artifacts:
     cells_geojson:     features/cells.geojson
     # heat_model:        model/heat.pkl
     pollution_latest:  features/pollution_latest.parquet
+  
+sources:
+  sentinel2:
+    stac_url: https://earth-search.aws.element84.com/v1
+    collection: sentinel-2-l2a
+    bbox: [76.83, 28.40, 77.35, 28.88]     # [west, south, east, north]
+    date_range: "2026-05-01/2026-06-30"
+    max_cloud_cover: 20
+    bands: [red, nir]
+    epsg: 32643                            # UTM Zone 43N (Delhi)
+    resolution_m: 10
