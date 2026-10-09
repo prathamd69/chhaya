@@ -9,11 +9,13 @@ Returns a GeoDataFrame: [h3_index, ndvi]
 
 from pathlib import Path
 import hashlib
+from datetime import datetime, timedelta
 
 import geopandas as gpd
 import numpy as np
 import stackstac
 import xarray as xr
+import rioxarray  
 from pystac_client import Client
 from rasterstats import zonal_stats
 
@@ -27,7 +29,7 @@ class Sentinel2Source(SourceBase):
 
     def run(self) -> gpd.GeoDataFrame:
         grid = self._grid()
-        scene = self._pick_scene()
+        scene = self._pick_scenes()
         cache = self._cache_path(scene)
 
         if cache.exists():
@@ -44,18 +46,25 @@ class Sentinel2Source(SourceBase):
 
     def _cfg(self) -> dict:
         return self.cfg["sources"]["sentinel2"]
-
-    def _pick_scene(self):
+    
+    def _pick_scenes(self) -> list:
         cfg = self._cfg()
-        self.log.info(f"searching {cfg['collection']} — {cfg['date_range']}")
+        comp = cfg["composite"]
+
+        self.log.info(
+            f"searching {cfg['collection']} — {cfg['date_range']} "
+            f"— need {comp['scenes']} scenes (one per tile)"
+        )
 
         catalog = Client.open(cfg["stac_url"])
-        items = catalog.search(
-            collections=[cfg["collection"]],
-            bbox=cfg["bbox"],
-            datetime=cfg["date_range"],
-            query={"eo:cloud_cover": {"lt": cfg["max_cloud_cover"]}},
-        ).item_collection()
+        items = list(
+            catalog.search(
+                collections=[cfg["collection"]],
+                bbox=cfg["bbox"],
+                datetime=cfg["date_range"],
+                query={"eo:cloud_cover": {"lt": cfg["max_cloud_cover"]}},
+            ).item_collection()
+        )
 
         if len(items) == 0:
             raise RuntimeError(
@@ -63,49 +72,89 @@ class Sentinel2Source(SourceBase):
                 f"with cloud cover < {cfg['max_cloud_cover']}%"
             )
 
-        best = min(items, key=lambda i: i.properties.get("eo:cloud_cover", 100))
-        self.log.info(
-            f"picked {best.id} — "
-            f"{best.properties['eo:cloud_cover']:.2f}% cloud — "
-            f"{best.datetime.date()}"
-        )
-        return best
+        # Cleanest scenes first
+        items.sort(key=lambda i: i.properties.get("eo:cloud_cover", 100))
 
-    def _cache_path(self, scene) -> Path:
-            cache_dir = Path(self.cfg["local"]["raw_dir"]) / "sentinel2"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            return cache_dir / f"{scene.id}_ndvi.tif"
-    
-    def _load_bands(self, scene):
+        chosen = []
+        used_tiles = set()
+        anchor_date = None
+
+        for item in items:
+            if len(chosen) >= comp["scenes"]:
+                break
+
+            tile = item.properties.get("grid:code", "unknown")
+            if tile in used_tiles:
+                continue
+
+            if anchor_date is None:
+                anchor_date = item.datetime
+            elif abs((item.datetime - anchor_date).days) > comp["window_days"]:
+                continue
+
+            chosen.append(item)
+            used_tiles.add(tile)
+
+        if len(chosen) < comp["scenes"]:
+            self.log.warning(
+                f"only found {len(chosen)} distinct-tile scenes within "
+                f"{comp['window_days']}d — proceeding with what we have"
+            )
+
+        for i in chosen:
+            self.log.info(
+                f"  using {i.id} — tile {i.properties.get('grid:code')} — "
+                f"{i.properties['eo:cloud_cover']:.2f}% cloud — {i.datetime.date()}"
+            )
+
+        return chosen
+
+
+    def _cache_path(self, scenes: list) -> Path:
+        cache_dir = Path(self.cfg["local"]["raw_dir"]) / "sentinel2"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Deterministic key from sorted scene IDs
+        key = hashlib.md5("|".join(sorted(s.id for s in scenes)).encode()).hexdigest()[:10]
+        return cache_dir / f"composite_{key}_ndvi.tif"
+
+
+    def _load_bands(self, scenes: list):
         cfg = self._cfg()
-        self.log.info(f"loading bands {cfg['bands']} at {cfg['resolution_m']}m")
+        self.log.info(f"loading {len(scenes)} scenes, bands {cfg['bands']} at {cfg['resolution_m']}m")
 
         stack = stackstac.stack(
-            [scene],
+            scenes,
             assets=cfg["bands"],
             epsg=cfg["epsg"],
             resolution=cfg["resolution_m"],
             bounds_latlon=cfg["bbox"],
-        ).squeeze()
+        )  # dims: (time, band, y, x)
 
-        red = stack.sel(band="red").compute().astype("float32")
+        red = stack.sel(band="red").compute().astype("float32")  # (time, y, x)
         nir = stack.sel(band="nir").compute().astype("float32")
 
         self.log.info(f"loaded red shape={red.shape}, nir shape={nir.shape}")
         return red, nir
 
+
     def _compute_ndvi(self, red, nir):
+        # red, nir shape: (time, y, x). Compute NDVI per scene, then median across time.
         ndvi = (nir - red) / (nir + red)
         valid = (red > 0) & (nir > 0)
         ndvi = ndvi.where(valid)
 
-        self.log.info(
-            f"NDVI mean={float(ndvi.mean(skipna=True)):.3f}, "
-            f"valid={float(valid.mean()):.1%}"
-        )
-        return ndvi
+        # Median across time — robust to a cloudy pixel in one scene
+        ndvi_med = ndvi.median(dim="time", skipna=True)
 
+        self.log.info(
+            f"composite NDVI mean={float(ndvi_med.mean(skipna=True)):.3f}, "
+            f"valid={float(valid.any(dim='time').mean()):.1%}"
+        )
+        return ndvi_med
+    
     def _save_cache(self, ndvi, path: Path):
+        ndvi = ndvi.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=False)
+        ndvi = ndvi.rio.write_crs(f"EPSG:{self._cfg()['epsg']}", inplace=False)
         ndvi.rio.to_raster(path)
         self.log.info(f"cached NDVI raster: {path}")
 
